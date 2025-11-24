@@ -153,6 +153,7 @@ Nebius = clouds.Nebius
 Hyperbolic = clouds.Hyperbolic
 Shadeform = clouds.Shadeform
 Seeweb = clouds.Seeweb
+Verda = clouds.Verda
 
 __all__ = [
     '__version__',

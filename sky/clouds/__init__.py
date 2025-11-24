@@ -33,6 +33,7 @@ from sky.clouds.seeweb import Seeweb
 from sky.clouds.shadeform import Shadeform
 from sky.clouds.ssh import SSH
 from sky.clouds.vast import Vast
+from sky.clouds.verda import Verda
 from sky.clouds.vsphere import Vsphere
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
     'Shadeform',
     'Vast',
     'OCI',
+    'Verda',
     'Vsphere',
     'Kubernetes',
     'SSH',

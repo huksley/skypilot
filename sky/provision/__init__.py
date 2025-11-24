@@ -31,6 +31,7 @@ from sky.provision import seeweb
 from sky.provision import shadeform
 from sky.provision import ssh
 from sky.provision import vast
+from sky.provision import verda
 from sky.provision import vsphere
 from sky.utils import command_runner
 from sky.utils import timeline
