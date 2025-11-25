@@ -234,6 +234,7 @@ cloud_dependencies: Dict[str, List[str]] = {
     'hyperbolic': [],  # No dependencies needed for hyperbolic
     'seeweb': ['ecsapi==0.4.0'],
     'shadeform': [],  # No dependencies needed for shadeform
+    'verda': ['datacrunch>=1.16.0'],
 }
 
 # Calculate which clouds should be included in the [all] installation.
