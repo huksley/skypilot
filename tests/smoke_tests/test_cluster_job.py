@@ -1108,6 +1108,116 @@ def test_task_labels_gcp():
         smoke_tests_utils.run_one_test(test)
 
 
+# ---------- Remote identity on Azure ----------
+@pytest.mark.azure
+def test_azure_remote_identity():
+    """Test Azure remote_identity with SERVICE_ACCOUNT and LOCAL_CREDENTIALS.
+
+    Verifies that:
+    1. With SERVICE_ACCOUNT, Azure credentials are not uploaded and the
+       VM has a managed identity.
+    2. With LOCAL_CREDENTIALS, Azure credentials are uploaded.
+    """
+    name = smoke_tests_utils.get_cluster_name()
+    test = smoke_tests_utils.Test(
+        'azure_remote_identity',
+        [
+            # Test SERVICE_ACCOUNT: credentials should NOT be uploaded
+            f'sky launch -y -c {name} --cloud azure '
+            f'{smoke_tests_utils.LOW_RESOURCE_ARG} '
+            'tests/test_yamls/test_azure_remote_identity_service_account.yaml',
+            f'sky logs {name} 1 --status',
+            f'sky down -y {name}',
+            # Test LOCAL_CREDENTIALS: credentials should be uploaded
+            f'sky launch -y -c {name} --cloud azure '
+            f'{smoke_tests_utils.LOW_RESOURCE_ARG} '
+            'tests/test_yamls/test_azure_remote_identity_local_creds.yaml',
+            f'sky logs {name} 1 --status',
+        ],
+        f'sky down -y {name}',
+        timeout=20 * 60,
+    )
+    smoke_tests_utils.run_one_test(test)
+
+
+# ---------- Custom VNet on Azure ----------
+@pytest.mark.azure
+def test_azure_vpc_name():
+    """Test Azure vpc_name with a custom VNet.
+
+    Creates a VNet, launches a cluster using it, and verifies the VM's
+    NIC is attached to the custom VNet's subnet.
+    """
+    name = smoke_tests_utils.get_cluster_name()
+    vnet_name = f'sky-test-vnet-{name}'
+    rg_name = f'sky-test-rg-{name}'
+    region = 'eastus'
+    template_str = pathlib.Path(
+        'tests/test_yamls/test_azure_vpc.yaml.j2').read_text()
+    template = jinja2.Template(template_str)
+    content = template.render(vpc_name=vnet_name, region=region)
+    with tempfile.NamedTemporaryFile(suffix='.yaml', mode='w') as f:
+        f.write(content)
+        f.flush()
+        file_path = f.name
+        test = smoke_tests_utils.Test(
+            'azure_vpc_name',
+            [
+                # Launch cloud-cmd cluster for remote verification
+                smoke_tests_utils.launch_cluster_for_cloud_cmd('azure', name),
+                # Create a resource group and VNet for the test
+                f'az group create -n {rg_name} -l {region}',
+                f'az network vnet create -g {rg_name} -n {vnet_name} '
+                f'--address-prefix 10.0.0.0/16 '
+                f'--subnet-name default --subnet-prefix 10.0.0.0/24',
+                # Launch cluster using the custom VNet
+                f'sky launch -y -c {name} '
+                f'{smoke_tests_utils.LOW_RESOURCE_ARG} {file_path}',
+                # Verify the VM NIC is in the custom VNet
+                smoke_tests_utils.run_cloud_cmd_on_cluster(
+                    name, f'az network nic list '
+                    f'--query "[?contains(ipConfigurations[0].subnet.id, '
+                    f"'{vnet_name}'"
+                    f')].name" --output tsv | grep .'),
+            ],
+            f'sky down -y {name}; '
+            f'az group delete -n {rg_name} -y --no-wait; '
+            f'{smoke_tests_utils.down_cluster_for_cloud_cmd(name)}',
+            timeout=25 * 60,
+        )
+        smoke_tests_utils.run_one_test(test)
+
+
+# ---------- Labels from task on Azure (labels) ----------
+@pytest.mark.azure
+def test_task_labels_azure():
+    name = smoke_tests_utils.get_cluster_name()
+    template_str = pathlib.Path(
+        'tests/test_yamls/test_labels.yaml.j2').read_text()
+    template = jinja2.Template(template_str)
+    content = template.render(cloud='azure', region='eastus')
+    with tempfile.NamedTemporaryFile(suffix='.yaml', mode='w') as f:
+        f.write(content)
+        f.flush()
+        file_path = f.name
+        test = smoke_tests_utils.Test(
+            'task_labels_azure',
+            [
+                smoke_tests_utils.launch_cluster_for_cloud_cmd('azure', name),
+                f'sky launch -y -c {name} {smoke_tests_utils.LOW_RESOURCE_ARG} {file_path}',
+                # Verify with az cli that the tags are set.
+                smoke_tests_utils.run_cloud_cmd_on_cluster(
+                    name, 'az vm list '
+                    f'--query "[?starts_with(name, \'{name}\') '
+                    '&& tags.inlinelabel1==\'inlinevalue1\' '
+                    '&& tags.inlinelabel2==\'inlinevalue2\'].name" '
+                    '--output tsv | grep .'),
+            ],
+            f'sky down -y {name} && {smoke_tests_utils.down_cluster_for_cloud_cmd(name)}',
+        )
+        smoke_tests_utils.run_one_test(test)
+
+
 # ---------- Labels from task on Kubernetes (labels) ----------
 @pytest.mark.kubernetes
 def test_task_labels_kubernetes():
@@ -2129,7 +2239,11 @@ def test_kubernetes_container_status_unknown_status_refresh():
     test = smoke_tests_utils.Test(
         'kubernetes_container_status_unknown_status_refresh',
         [
-            f'sky launch -y -c {name} --infra kubernetes --num-nodes 8 --detach-run tests/test_yamls/test_k8s_ephemeral_storage_eviction.yaml',
+            # First, launch the cluster with an idle task so provisioning
+            # completes fully (ray, skylet started) before pods get evicted.
+            f'sky launch -y -c {name} --infra kubernetes --num-nodes 8 -- "echo cluster ready"',
+            # Now trigger eviction via exec --detach-run on the running cluster.
+            f'sky exec {name} --detach-run tests/test_yamls/test_k8s_ephemeral_storage_eviction.yaml',
             # Poll sky status --refresh, fail fast if error found.
             # Before the fix this logged: "Failed to query ... [TypeError]..."
             (f'for i in $(seq 1 20); do '
@@ -2746,6 +2860,51 @@ def test_kubernetes_recovery():
         f'sky down -y {name} && {service_cleanup_check} && '
         f'{smoke_tests_utils.down_cluster_for_cloud_cmd(name)}',
         timeout=30 * 60,
+    )
+    smoke_tests_utils.run_one_test(test)
+
+
+@pytest.mark.kubernetes
+def test_kubernetes_sigterm_keepalive():
+    """Test that worker pods survive SIGTERM (node drain) via keep-alive fix."""
+    name = smoke_tests_utils.get_cluster_name()
+    name_on_cloud = common_utils.make_cluster_name_on_cloud(
+        name, sky.Kubernetes.max_cluster_name_length())
+    worker1 = f'{name_on_cloud}-worker1'
+    verify_two_pods_running = (
+        f'count=$(kubectl get pod -l ray-cluster-name={name_on_cloud} '
+        '--no-headers 2>/dev/null | grep -c Running || echo 0); '
+        'if [ "$count" -ne 2 ]; then echo "Expected 2 Running pods, got $count"; exit 1; fi; '
+        'echo "Both pods Running"')
+    verify_worker_running = (
+        f'status=$(kubectl get pod {worker1} -o jsonpath="{{.status.phase}}"); '
+        'echo "Worker pod status: $status"; '
+        'if [ "$status" != "Running" ]; then echo "ERROR: expected Running, got $status"; exit 1; fi'
+    )
+    test = smoke_tests_utils.Test(
+        'kubernetes_sigterm_keepalive',
+        [
+            smoke_tests_utils.launch_cluster_for_cloud_cmd('kubernetes', name),
+            (f'sky launch -y -c {name} --infra kubernetes --cpus 0.1+ '
+             f'--num-nodes 2 -- "echo ready"'),
+            f'sky logs {name} --status 1',
+            smoke_tests_utils.run_cloud_cmd_on_cluster(
+                name,
+                verify_two_pods_running,
+            ),
+            smoke_tests_utils.run_cloud_cmd_on_cluster(
+                name,
+                f'kubectl exec {worker1} -- kill -TERM -1',
+            ),
+            'sleep 5',
+            smoke_tests_utils.run_cloud_cmd_on_cluster(
+                name,
+                verify_worker_running,
+            ),
+            f'sky down -y {name}',
+        ],
+        f'sky down -y {name}; {smoke_tests_utils.down_cluster_for_cloud_cmd(name)}',
+        timeout=15 * 60,
     )
     smoke_tests_utils.run_one_test(test)
 
